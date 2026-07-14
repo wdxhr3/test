@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -22,6 +23,7 @@ from PyQt5.QtNetwork import QHostAddress, QTcpServer, QUdpSocket
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -38,6 +40,7 @@ from PyQt5.QtWidgets import (
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "pet_config.json"
+USER_CONFIG_PATH = APP_DIR / "runtime" / "user_config.json"
 LOG_PATH = APP_DIR / "pet.log"
 USER32 = ctypes.windll.user32
 ERROR_ALREADY_EXISTS = 183
@@ -52,9 +55,285 @@ logging.basicConfig(
 LOG = logging.getLogger("codex_desktop_pet")
 
 
+def _resolve_asset_path(value: str, base_dir: Path) -> str:
+    if not value:
+        return ""
+    candidate = Path(os.path.expandvars(value)).expanduser()
+    if not candidate.is_absolute():
+        candidate = base_dir / candidate
+    return str(candidate.resolve())
+
+
+def discover_renderer_assets(base_dir: Path) -> Dict[str, str]:
+    """Find a colocated PNGTuber application and model after a repo clone."""
+    executables: List[Path] = []
+    models: List[Path] = []
+    ignored = {".git", "runtime", "__pycache__", ".venv", "venv"}
+    if not base_dir.exists():
+        return {"executable": "", "model_file": ""}
+    for root, directories, files in os.walk(base_dir):
+        directories[:] = [name for name in directories if name not in ignored]
+        folder = Path(root)
+        for name in files:
+            lower = name.lower()
+            path = folder / name
+            if lower == "pngtuber-remix.exe":
+                executables.append(path)
+            elif lower.endswith(".pngremix"):
+                models.append(path)
+
+    def best(paths: List[Path]) -> str:
+        if not paths:
+            return ""
+        selected = min(
+            paths,
+            key=lambda path: (len(path.relative_to(base_dir).parts), str(path).lower()),
+        )
+        return str(selected.resolve())
+
+    return {"executable": best(executables), "model_file": best(models)}
+
+
+def apply_user_renderer_config(
+    config: dict, user_config_path: Path, base_dir: Path
+) -> None:
+    if not user_config_path.exists():
+        return
+    try:
+        local = json.loads(user_config_path.read_text(encoding="utf-8"))
+        renderer = local.get("renderer", {})
+        for key in ("executable", "model_file"):
+            if renderer.get(key):
+                config["renderer"][key] = _resolve_asset_path(
+                    str(renderer[key]), base_dir
+                )
+    except Exception:
+        LOG.exception("Failed to read local renderer configuration")
+
+
+def renderer_paths_are_valid(config: dict) -> bool:
+    renderer = config.get("renderer", {})
+    return all(
+        renderer.get(key) and Path(str(renderer[key])).is_file()
+        for key in ("executable", "model_file")
+    )
+
+
+def save_user_renderer_config(config: dict, user_config_path: Path) -> None:
+    renderer = config["renderer"]
+    payload = {
+        "renderer": {
+            "executable": str(Path(renderer["executable"]).resolve()),
+            "model_file": str(Path(renderer["model_file"]).resolve()),
+        }
+    }
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def ensure_renderer_configuration(
+    config: dict,
+    base_dir: Path = APP_DIR,
+    user_config_path: Path = USER_CONFIG_PATH,
+) -> None:
+    renderer = config["renderer"]
+    for key in ("executable", "model_file"):
+        renderer[key] = _resolve_asset_path(str(renderer.get(key, "")), base_dir)
+    if renderer_paths_are_valid(config):
+        return
+
+    discovered = discover_renderer_assets(base_dir)
+    for key in ("executable", "model_file"):
+        if not renderer.get(key) or not Path(renderer[key]).is_file():
+            renderer[key] = discovered[key]
+    if renderer_paths_are_valid(config):
+        save_user_renderer_config(config, user_config_path)
+        return
+
+    QMessageBox.information(
+        None,
+        "Codex 桌宠首次初始化",
+        "需要选择 PNGTuber Remix 程序和角色模型。\n"
+        "这些路径只保存在本机，不会写入 GitHub 仓库。",
+    )
+    if not renderer.get("executable") or not Path(renderer["executable"]).is_file():
+        executable, _ = QFileDialog.getOpenFileName(
+            None,
+            "选择 PNGTuber-Remix.exe",
+            str(base_dir),
+            "PNGTuber Remix (PNGTuber-Remix.exe);;Windows programs (*.exe)",
+        )
+        if not executable:
+            raise RuntimeError("初始化已取消：尚未选择 PNGTuber-Remix.exe")
+        renderer["executable"] = str(Path(executable).resolve())
+
+    model_start = str(Path(renderer["executable"]).parent)
+    if not renderer.get("model_file") or not Path(renderer["model_file"]).is_file():
+        model, _ = QFileDialog.getOpenFileName(
+            None,
+            "选择角色 .pngRemix 模型",
+            model_start,
+            "PNGTuber models (*.pngRemix);;All files (*)",
+        )
+        if not model:
+            raise RuntimeError("初始化已取消：尚未选择 .pngRemix 角色模型")
+        renderer["model_file"] = str(Path(model).resolve())
+
+    if not renderer_paths_are_valid(config):
+        raise RuntimeError("所选 PNGTuber 程序或角色模型不存在")
+    save_user_renderer_config(config, user_config_path)
+
+
 def load_config() -> dict:
     with CONFIG_PATH.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+        config = json.load(handle)
+    apply_user_renderer_config(config, USER_CONFIG_PATH, APP_DIR)
+    return config
+
+
+def calculate_model_zoom_steps(config: dict) -> int:
+    """Scale the model view along with the configured pet viewport."""
+    renderer = config["renderer"]
+    ui = config["ui"]
+    base_steps = int(renderer.get("zoom_steps", 0))
+    reference_width = float(renderer.get("reference_width", ui["width"]))
+    reference_height = float(renderer.get("reference_height", ui["height"]))
+    step_ratio = float(renderer.get("zoom_ratio_per_step", 0.9))
+    if (
+        reference_width <= 0
+        or reference_height <= 0
+        or not 0 < step_ratio < 1
+    ):
+        return base_steps
+    viewport_ratio = min(
+        float(ui["width"]) / reference_width,
+        float(ui["height"]) / reference_height,
+    )
+    if viewport_ratio <= 0:
+        return base_steps
+    size_steps = round(math.log(viewport_ratio) / math.log(step_ratio))
+    return base_steps - size_steps
+
+
+def corrected_logical_position(
+    target_x: int,
+    target_y: int,
+    logical_x: int,
+    logical_y: int,
+    native_x: int,
+    native_y: int,
+) -> Tuple[int, int]:
+    """Compensate for the invisible native frame around transparent windows."""
+    return (
+        target_x - (native_x - logical_x),
+        target_y - (native_y - logical_y),
+    )
+
+
+def align_overlay_to_native_target(
+    overlay: QWidget, target_x: int, target_y: int
+) -> None:
+    """Place the visible native window at the requested screen coordinates."""
+    app = QApplication.instance()
+    if app is not None:
+        app.processEvents()
+    logical = overlay.geometry()
+    native_left, native_top, _, _ = win32gui.GetWindowRect(int(overlay.winId()))
+    corrected_x, corrected_y = corrected_logical_position(
+        target_x,
+        target_y,
+        logical.x(),
+        logical.y(),
+        native_left,
+        native_top,
+    )
+    if (corrected_x, corrected_y) != (logical.x(), logical.y()):
+        overlay.move(corrected_x, corrected_y)
+        if app is not None:
+            app.processEvents()
+
+
+def responsive_sleep(seconds: float) -> None:
+    """Sleep without making the startup feedback window look frozen."""
+    deadline = time.monotonic() + max(0.0, seconds)
+    while time.monotonic() < deadline:
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+
+class StartupWindow(QWidget):
+    """Immediate visual acknowledgement while PNGTuber Remix is loading."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint,
+        )
+        self.setObjectName("startupWindow")
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setWindowTitle("Codex Desktop Pet")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        panel = QFrame(self)
+        panel.setObjectName("startupPanel")
+        panel.setStyleSheet(
+            "#startupPanel {"
+            " background: rgba(27, 24, 38, 245);"
+            " border: 1px solid rgba(236, 198, 255, 190);"
+            " border-radius: 16px;"
+            "}"
+            "QLabel { color: #f8efff; background: transparent; }"
+        )
+        outer.addWidget(panel)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(20, 15, 20, 15)
+        layout.setSpacing(5)
+        title = QLabel("Codex 桌宠", panel)
+        title_font = QFont()
+        title_font.setPointSize(11)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+
+        self.message = QLabel("正在启动，请稍候…", panel)
+        self.message.setStyleSheet("color: #e8c8ff;")
+        layout.addWidget(self.message)
+        hint = QLabel("首次载入角色模型通常需要 20–30 秒", panel)
+        hint.setStyleSheet("color: rgba(248, 239, 255, 155); font-size: 11px;")
+        layout.addWidget(hint)
+
+        self.resize(342, 112)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.move(area.right() - self.width() - 24, area.bottom() - self.height() - 24)
+
+    def set_message(self, message: str) -> None:
+        self.message.setText(message)
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
+
+def start_renderer_with_feedback(app: QApplication, controller):
+    """Start the blocking renderer while keeping visible startup feedback."""
+    startup = StartupWindow()
+    controller.progress = startup.set_message
+    startup.show()
+    startup.raise_()
+    app.processEvents()
+    try:
+        return controller.start()
+    finally:
+        startup.close()
+        app.processEvents()
 
 
 def enum_top_windows(predicate: Callable[[int], bool]) -> List[int]:
@@ -138,6 +417,7 @@ class PngTuberController:
         self.handles: Optional[RendererHandles] = None
         self.process: Optional[subprocess.Popen] = None
         self.last_expression: Optional[str] = None
+        self.progress: Callable[[str], None] = lambda _message: None
 
     @property
     def main_hwnd(self) -> int:
@@ -172,12 +452,13 @@ class PngTuberController:
             hwnd = finder()
             if hwnd:
                 return hwnd
-            time.sleep(0.1)
+            responsive_sleep(0.1)
         raise TimeoutError(f"等待 {label} 超时")
 
     def _start_process(self) -> Tuple[int, bool]:
         existing = self._find_main()
         if existing:
+            self.progress("正在连接 PNGTuber Remix…")
             return existing, False
 
         renderer = self.config["renderer"]
@@ -189,12 +470,13 @@ class PngTuberController:
             cwd=str(executable.parent),
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
+        self.progress("正在启动 PNGTuber Remix…")
         main = self._wait_for(
             self._find_main,
             renderer.get("startup_timeout", 20),
             "PNGTuber Remix 主窗口",
         )
-        time.sleep(renderer.get("startup_ready_delay", 3))
+        responsive_sleep(renderer.get("startup_ready_delay", 3))
         return main, True
 
     def _dialog_for_pid(self, pid: int) -> Optional[int]:
@@ -206,6 +488,7 @@ class PngTuberController:
         return dialogs[0] if dialogs else None
 
     def _load_model(self, main: int, pid: int) -> None:
+        self.progress("正在载入角色模型…")
         renderer = self.config["renderer"]
         model = Path(renderer["model_file"])
         if not model.exists():
@@ -214,7 +497,7 @@ class PngTuberController:
         points = renderer["automation_points"]
         LOG.info("Opening PNGTuber model dialog")
         click_client(main, points["file_menu"])
-        time.sleep(0.2)
+        responsive_sleep(0.2)
         click_client(main, points["file_open"])
         dialog = self._wait_for(
             lambda: self._dialog_for_pid(pid),
@@ -232,14 +515,15 @@ class PngTuberController:
             renderer.get("model_load_timeout", 20),
             "模型加载完成",
         )
-        time.sleep(renderer.get("post_load_delay", 2))
+        responsive_sleep(renderer.get("post_load_delay", 2))
         LOG.info("PNGTuber model loaded")
 
     def _create_pet_window(self, main: int, pid: int) -> int:
+        self.progress("正在创建透明桌宠窗口…")
         renderer = self.config["renderer"]
         points = renderer["automation_points"]
         click_client(main, points["window_menu"])
-        time.sleep(0.2)
+        responsive_sleep(0.2)
         click_client(main, points["add_window"])
         return self._wait_for(
             lambda: self._find_pet_window(pid),
@@ -256,11 +540,11 @@ class PngTuberController:
         while time.monotonic() < deadline:
             if not (unsigned_window_style(pet) & win32con.WS_CAPTION):
                 return
-            time.sleep(0.1)
+            responsive_sleep(0.1)
         raise RuntimeError("无法锁定 PNGTuber 透明窗口")
 
     def _apply_view_transform(self, pet: int) -> None:
-        steps = int(self.config["renderer"].get("zoom_steps", 0))
+        steps = calculate_model_zoom_steps(self.config)
         if not steps:
             return
         old_cursor = win32api.GetCursorPos()
@@ -270,17 +554,19 @@ class PngTuberController:
         wheel_delta = 120 if steps > 0 else -120
         for _ in range(abs(steps)):
             win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, wheel_delta)
-            time.sleep(0.05)
+            responsive_sleep(0.05)
         win32api.SetCursorPos(old_cursor)
-        time.sleep(0.5)
+        responsive_sleep(0.5)
 
     def start(self) -> RendererHandles:
+        self.progress("正在准备角色渲染器…")
         main, started_by_us = self._start_process()
         pid = pid_for_window(main)
         pet = self._find_pet_window(pid)
         if not pet:
             self._load_model(main, pid)
             pet = self._create_pet_window(main, pid)
+        self.progress("正在完成桌宠显示设置…")
         self._lock_pet_window(pet)
         self._apply_view_transform(pet)
         win32gui.ShowWindow(main, win32con.SW_HIDE)
@@ -913,21 +1199,28 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Codex Desktop Pet")
     app.setQuitOnLastWindowClosed(False)
-    controller = PngTuberController(config)
+    controller: Optional[PngTuberController] = None
     try:
-        controller.start()
+        ensure_renderer_configuration(config)
+        controller = PngTuberController(config)
+        start_renderer_with_feedback(app, controller)
         overlay = PetOverlay(controller, config)
         width = int(config["ui"].get("width", 420))
         height = int(config["ui"].get("height", 438))
         screen = QApplication.primaryScreen().availableGeometry()
         margin = int(config["ui"].get("screen_margin", 24))
+        right_margin = int(config["ui"].get("right_margin", margin))
+        bottom_margin = int(config["ui"].get("bottom_margin", margin))
         overlay.setGeometry(
-            screen.right() - width - margin + 1,
-            screen.bottom() - height - margin + 1,
+            screen.right() - width - right_margin + 1,
+            screen.bottom() - height - bottom_margin + 1,
             width,
             height,
         )
+        target_x = overlay.x()
+        target_y = overlay.y()
         overlay.show()
+        align_overlay_to_native_target(overlay, target_x, target_y)
         overlay.ensure_alignment()
         server = LocalCommandServer(overlay, int(config["control_port"]))
         event_server = CodexEventServer(server, int(config.get("event_port", 19289)))
@@ -941,7 +1234,8 @@ def main() -> int:
         return app.exec_()
     except Exception as exc:
         LOG.exception("Startup failed")
-        controller.cleanup()
+        if controller is not None:
+            controller.cleanup()
         QMessageBox.critical(None, "Codex Desktop Pet", f"桌宠启动失败：\n{exc}")
         return 1
     finally:
