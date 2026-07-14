@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 自动启动 PNGTuber Remix、加载 `彩P-E.png.pngRemix` 并创建透明角色窗口。
+- 自动发现并启动 PNGTuber Remix、加载选定的 `.pngRemix` 模型并创建透明角色窗口。
 - 角色透明悬浮、始终置顶，按住角色可拖动。
 - 双击角色打开 ChatGPT/Codex 桌面应用。
 - 右键角色可切换 `Shift + 1` 到 `Shift + 0`、`Shift + -` 的原模型表情。
@@ -16,6 +16,16 @@
 ## 启动与停止
 
 双击 `run_pet.bat` 启动，双击 `stop_pet.bat` 停止。
+
+首次启动时，程序会按以下顺序定位渲染器和模型：
+
+1. 在项目目录及其子目录中自动寻找 `PNGTuber-Remix.exe` 和 `*.pngRemix`。
+2. 如果没有找到，弹出文件选择窗口，让你分别选择渲染器和模型。
+3. 选择结果保存在本机的 `runtime/user_config.json`；该目录已被 Git 忽略，不会把个人绝对路径提交到仓库。
+
+因此可以把 PNGTuber Remix 完整程序目录和模型放进克隆后的项目目录，程序会自动找到；也可以把它们放在电脑的任意位置，在首次启动时手动选择。请注意 `PNGTuber-Remix.exe` 旁边通常还需要原程序附带的 `.pck` 和 DLL 文件。
+
+本仓库明确不包含、也通过 `.gitignore` 阻止提交任何 `*.pngRemix` 创作者模型，以及 PNGTuber Remix 的 EXE、PCK、DLL 和用户偏好文件。第三方运行环境、Python 依赖与许可边界详见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
 
 也可以运行 `create_shortcut.ps1` 创建带角色图标的 `启动 Codex 桌宠.lnk`。图标源文件位于 `assets/codex-pet-icon.png`，Windows 多尺寸图标位于 `assets/codex-pet.ico`。
 
@@ -74,13 +84,13 @@ $env:QT_QPA_PLATFORM = "offscreen"
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖长回答展开、完整正文保留以及“刚刚 / N 分钟前”的时间更新。
+测试覆盖长回答展开、完整正文保留、相对时间更新、窗口与模型缩放，以及克隆仓库后的路径自动发现和本地配置保存。
 
 ## 配置
 
-`pet_config.json` 包含模型路径、窗口尺寸、Codex Windows App ID、事件端口和状态表情映射。当前自动化坐标针对素材附带的 PNGTuber Remix V1.4。
+`pet_config.json` 包含可提交到仓库的公共默认配置，例如窗口尺寸、Codex Windows App ID、事件端口和状态表情映射。个人的渲染器和模型绝对路径保存在 `runtime/user_config.json`。当前自动化坐标针对素材附带的 PNGTuber Remix V1.4。
 
-`renderer.zoom_steps` 控制启动时的原生镜头缩放。负数缩小、正数放大；当前模型默认使用 `-6`，以尽量保留角色、猫和桌面的完整构图。
+`renderer.zoom_steps` 是参考尺寸下的原生镜头缩放基准。程序会结合 `reference_width`、`reference_height` 和当前窗口尺寸自动追加缩放；当前 `540×338` 窗口会从基准 `-6` 自动调整为 `-8`，以保留角色、猫和桌面的完整构图。
 
 模型包包含作者的版权声明；本项目不会解密或重新分发模型素材。请只在素材授权允许的范围内使用。
 
