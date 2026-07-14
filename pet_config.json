@@ -1,0 +1,55 @@
+{
+  "control_port": 19288,
+  "event_port": 19289,
+  "renderer": {
+    "executable": "E:\\BaiduNetdiskDownload\\超时空辉夜姬\\APP\\PNGTuber-Remix.exe",
+    "model_file": "E:\\BaiduNetdiskDownload\\超时空辉夜姬\\彩P-E.png.pngRemix",
+    "main_window_title": "PNGTuber-Remix",
+    "pet_window_title_pattern": "Window \\d+",
+    "startup_timeout": 20,
+    "startup_ready_delay": 3,
+    "dialog_timeout": 8,
+    "model_load_timeout": 20,
+    "post_load_delay": 2,
+    "window_timeout": 8,
+    "zoom_steps": -6,
+    "automation_points": {
+      "file_menu": [35, 18],
+      "file_open": [30, 50],
+      "window_menu": [220, 18],
+      "add_window": [260, 157]
+    }
+  },
+  "ui": {
+    "width": 640,
+    "height": 400,
+    "screen_margin": 24,
+    "bubble_seconds": 10
+  },
+  "codex": {
+    "windows_app_id": "OpenAI.Codex_2p2nqsd0c76g0!App"
+  },
+  "states": {
+    "idle": {
+      "expression": "1",
+      "message": "我在这里。"
+    },
+    "running": {
+      "expression": "2",
+      "message": "Codex 正在处理任务……"
+    },
+    "needs_input": {
+      "expression": "8",
+      "message": "需要你的回答或批准。"
+    },
+    "ready": {
+      "expression": "0",
+      "message": "任务已经完成。"
+    },
+    "blocked": {
+      "expression": "6",
+      "message": "任务遇到了问题。"
+    }
+  }
+}
+
