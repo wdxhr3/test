@@ -5,4 +5,12 @@ runtime/
 *.lnk
 .DS_Store
 
+# Third-party PNGTuber runtime and copyrighted creator models.
+*.pngRemix
+PNGTuber-Remix*.exe
+PNGTuber-Remix*.pck
+godotgif*.dll
+libgdexample*.dll
+Preferences.pRDat
+autosaves/
 
