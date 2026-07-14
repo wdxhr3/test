@@ -2,8 +2,8 @@
   "control_port": 19288,
   "event_port": 19289,
   "renderer": {
-    "executable": "E:\\BaiduNetdiskDownload\\超时空辉夜姬\\APP\\PNGTuber-Remix.exe",
-    "model_file": "E:\\BaiduNetdiskDownload\\超时空辉夜姬\\彩P-E.png.pngRemix",
+    "executable": "",
+    "model_file": "",
     "main_window_title": "PNGTuber-Remix",
     "pet_window_title_pattern": "Window \\d+",
     "startup_timeout": 20,
@@ -13,6 +13,9 @@
     "post_load_delay": 2,
     "window_timeout": 8,
     "zoom_steps": -6,
+    "reference_width": 640,
+    "reference_height": 400,
+    "zoom_ratio_per_step": 0.9,
     "automation_points": {
       "file_menu": [35, 18],
       "file_open": [30, 50],
@@ -21,9 +24,11 @@
     }
   },
   "ui": {
-    "width": 640,
-    "height": 400,
+    "width": 540,
+    "height": 338,
     "screen_margin": 24,
+    "right_margin": -76,
+    "bottom_margin": 12,
     "bubble_seconds": 10
   },
   "codex": {
