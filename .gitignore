@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+pet.log
+runtime/
+*.lnk
+.DS_Store
+
+
